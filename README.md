@@ -16,3 +16,7 @@ npm start
 ## 当前边界
 
 这是第一阶段的独立 Companion：它验证“复用已有 Response body、修复 Preview 体验”的核心路径，不拦截网络、不安装证书、不要求修改 Expo/RN 项目。下一步可以接 Expo 调试会话协议，把手动粘贴替换成当前请求的自动读取。
+
+## Chrome DevTools 插件（第一阶段）
+
+`extension/` 是“椰子翻译”独立 DevTools 面板：自动发现本机 Expo/Metro 的 `/json/list`，连接 `/inspector/network`，监听 Network 事件，并用 `Network.getResponseBody` 读取响应。安装方式：Chrome 打开 `chrome://extensions`，开启开发者模式，选择“加载已解压的扩展程序”，选择本项目 `extension` 目录；启动 Expo 后，在 React Native DevTools 顶部点击“椰子翻译”。
