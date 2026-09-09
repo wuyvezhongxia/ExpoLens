@@ -4,7 +4,10 @@
 
 ## 使用
 
+项目目录是 `~/Documents/ChatGPT/ExpoLens`。不要再使用旧的 `~/Documents/ChatGPT/New project` 路径；该目录不存在。
+
 ```bash
+cd "$HOME/Documents/ChatGPT/ExpoLens"
 npm start
 ```
 
