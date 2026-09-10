@@ -77,9 +77,8 @@
       return;
     }
     if (msg.type === 'stats') {
-      const metroPort = msg.metro?.__port || msg.metroPort || '?';
       setStatus(
-        `Preview 中 · ${msg.ingestCount || 0} 条 · Metro :${metroPort}`,
+        `已捕获 ${msg.ingestCount || 0} 条 · 可 Preview · :${msg.port || '?'}`,
         'ok'
       );
       return;
@@ -93,10 +92,11 @@
       return;
     }
     if (msg.type === 'hello' || msg.type === 'connected') {
-      const metroPort = msg.target?.__port || msg.metro?.__port || msg.port || '?';
       setStatus(
-        `已旁听 Metro :${metroPort} · 已捕获 ${msg.ingestCount || 0}`,
-        'ok'
+        msg.ingestCount > 0
+          ? `不抢 DevTools · 已捕获 ${msg.ingestCount} · :${msg.port || '?'}`
+          : `不抢 DevTools · 等待 with-expolens 推送 · :${msg.port || '?'}`,
+        msg.ingestCount > 0 ? 'ok' : 'warn'
       );
       return;
     }
@@ -205,7 +205,7 @@
   }
 
   async function discover() {
-    setStatus('正在发现本机 Metro…', 'warn');
+    setStatus('连接本地 ingest…', 'warn');
     ensureBridge();
     try {
       const res = await fetch('/api/targets', { cache: 'no-store' });
@@ -213,17 +213,28 @@
       targets = data.targets || [];
       const selectEl = $('#target');
       if (!targets.length) {
-        selectEl.innerHTML = '<option>未发现 Metro</option>';
-        setStatus('未发现 Metro · 请先 npx expo start', 'bad');
-        return;
+        selectEl.innerHTML = '<option>Ingest</option>';
+      } else {
+        selectEl.innerHTML = targets
+          .map((x, i) => {
+            const tag = x.capture === 'ingest' ? '捕获' : x.hasDevice ? '信息' : '空';
+            const name =
+              x.capture === 'ingest'
+                ? 'Ingest（不抢 DevTools）'
+                : x.hasDevice
+                  ? `${x.title || 'App'} · ${x.deviceName || 'device'}`
+                  : x.title || 'Metro';
+            return `<option value="${i}">[${tag}] ${esc(name)} · :${x.__port}</option>`;
+          })
+          .join('');
       }
-      selectEl.innerHTML = targets
-        .map(
-          (x, i) =>
-            `<option value="${i}">${esc(x.title || 'App')} · ${esc(x.deviceName || 'device')} · Metro :${x.__port}</option>`
-        )
-        .join('');
-      await connect(targets[0]);
+      const preferred = targets.find((t) => t.capture === 'ingest') || targets[0];
+      if (preferred) {
+        selectEl.value = String(Math.max(0, targets.indexOf(preferred)));
+        await connect(preferred);
+      } else {
+        await connect({ id: 'ingest', capture: 'ingest' });
+      }
     } catch (e) {
       setStatus(`发现失败：${e.message || e}`, 'bad');
     }
@@ -231,21 +242,23 @@
 
   async function connect(target) {
     ensureBridge();
-    setStatus(`旁听 Metro :${target?.__port || '?'}…`, 'warn');
+    setStatus('同步捕获状态…', 'warn');
     try {
       const res = await fetch('/api/connect', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: target?.id, port: target?.__port }),
+        body: JSON.stringify({ id: target?.id || 'ingest', port: target?.__port }),
       });
       const data = await res.json();
-      if (!data.ok) throw new Error(data.error || '未连上 Metro');
+      if (!data.ok) throw new Error(data.error || 'connect failed');
       if (bridge?.readyState === WebSocket.OPEN) {
         bridge.send(JSON.stringify({ type: 'replay' }));
       }
       setStatus(
-        `已旁听 Metro :${data.target?.__port || target?.__port || '?'} · 已捕获 ${data.ingestCount || 0}`,
-        'ok'
+        data.ingestCount > 0
+          ? `不抢 DevTools · 已捕获 ${data.ingestCount} · :${data.port || '?'}`
+          : `不抢 DevTools · 等待 with-expolens 推送 · :${data.port || '?'}`,
+        data.ingestCount > 0 ? 'ok' : 'warn'
       );
     } catch (e) {
       setStatus(`连接失败：${e.message || e}`, 'bad');

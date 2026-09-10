@@ -11,7 +11,7 @@
         <div class="logo" aria-hidden="true"></div>
         <div>
           <h1>ExpoLens</h1>
-          <p>Response Preview · 任意项目通用 · 零改动</p>
+          <p>Response Preview · 任意项目 · 不改项目文件</p>
         </div>
       </div>
       <div class="header-actions">
@@ -26,7 +26,7 @@
 
     <div class="toolbar">
       <label class="sr" for="target">调试会话</label>
-      <select id="target"></select>
+      <select id="target" title="多端口时选「有设备」那一项；空 Metro 可忽略"></select>
       <span id="status">未连接</span>
     </div>
 
@@ -40,15 +40,16 @@
           <input id="filter" type="search" placeholder="过滤 URL / 方法 / 状态…" />
         </div>
         <div id="requests">
-          <div class="empty">等待请求。先启动 Expo，再点「重新连接」；RN DevTools 可同时开着。</div>
+          <div class="empty">等待请求。选好 [有设备] 后，在 App 里再点一次接口。</div>
         </div>
       </aside>
 
       <section>
         <div id="empty" class="empty hero-empty">
           <strong>Response Preview</strong>
-          <span>自动发现本机任意 Metro，旁听 <code>/inspector/network</code>。</span>
-          <span>对所有项目通用：不改业务代码、不装依赖、不写死端口。App 发请求后点左侧即可预览 JSON。</span>
+          <span>本模式<strong>不抢</strong> RN DevTools。请先 <code>npm start</code>，再用 with-expolens 启动 Expo。</span>
+          <span><code>node ~/Documents/ChatGPT/ExpoLens/bin/with-expolens.mjs npx expo start</code></span>
+          <span>然后在 DevTools 点 Reconnect；App 发请求后左侧会出现。</span>
         </div>
 
         <div id="detail" hidden>
@@ -75,7 +76,7 @@
     </main>
 
     <footer>
-      任意项目通用 · 零改动 · 旁听 Metro Network · 不占 RN DevTools
+      不改项目文件 · preload 挂钩 · 任意 Expo 项目 · JSON Preview
     </footer>
     <script src="panel.js"></script>
   </body>

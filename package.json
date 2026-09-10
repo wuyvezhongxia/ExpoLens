@@ -1,12 +1,16 @@
 {
   "name": "expolens",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
-  "description": "Zero-config Response Preview for any Expo/RN project. Listens to Metro /inspector/network; never modifies your app.",
+  "description": "Zero project-file-change Response Preview for any Expo/RN app via NODE_OPTIONS preload.",
   "type": "module",
+  "bin": {
+    "with-expolens": "./bin/with-expolens.mjs"
+  },
   "scripts": {
     "start": "node src/server.js",
-    "check": "node --check src/server.js"
+    "check": "node --check src/server.js",
+    "with": "node ./bin/with-expolens.mjs"
   },
   "dependencies": {
     "ws": "^8.21.3"

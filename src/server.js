@@ -7,18 +7,20 @@ import { promisify } from 'node:util';
 import { WebSocketServer, WebSocket } from 'ws';
 
 const execFileAsync = promisify(execFile);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const preloadPath = path.join(__dirname, 'metro-preload.cjs');
+const withBin = path.join(__dirname, '..', 'bin', 'with-expolens.mjs');
 
 /**
- * ExpoLens — Response Preview（通用工具，不绑定任何业务仓库）
+ * ExpoLens — Response Preview
  *
- * 约束：
- * - 零改动：不向任何项目写代码 / 配 tee / 写死上报地址
- * - 旁听 Metro `/inspector/network`，不抢 `/inspector/debug`
- * - 自动发现本机任意 Metro 端口，换项目也能用
+ * 不连接 /inspector/debug（那会挤掉 RN DevTools）。
+ * 只被动接收 preload 推送到 /api/ingest 的 Network 事件。
+ * 任意项目：用 with-expolens 启动 Expo，不改业务仓库文件。
  */
 const preferred = Number(process.env.PORT || 8787);
 const metroPortsEnv = process.env.METRO_PORTS || '';
-const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'extension');
+const root = path.join(__dirname, '..', 'extension');
 const types = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -35,14 +37,8 @@ const uiClients = new Set();
 let eventCount = 0;
 let lastEventAt = null;
 let listenPort = preferred;
-let metroSocket = null;
-let metroTarget = null;
-let discoverTimer = null;
-let reconnectDelay = 800;
 
-const DEFAULT_METRO_PORTS = [
-  8081, 8082, 8083, 19000, 19001, 19002, 19006, 8097,
-];
+const DEFAULT_METRO_PORTS = [8081, 8082, 8083, 19000, 19001, 19002, 19006, 8097];
 
 function actualPort() {
   return listenPort || preferred;
@@ -56,10 +52,9 @@ function metroPortCandidates() {
   return [...new Set([...fromEnv, ...DEFAULT_METRO_PORTS])];
 }
 
-function broadcast(msg, { skip } = {}) {
+function broadcast(msg) {
   const data = JSON.stringify(msg);
   for (const c of uiClients) {
-    if (skip && c === skip) continue;
     if (c.readyState === WebSocket.OPEN) c.send(data);
   }
 }
@@ -86,26 +81,37 @@ function ingestCdpMessage(msg) {
     return;
   }
 
-  if (typeof msg.method === 'string' && msg.method.startsWith('Network.')) {
+  if (typeof msg.method !== 'string' || !msg.method.startsWith('Network.')) return;
+  if (
+    msg.method !== 'Network.requestWillBeSent' &&
+    msg.method !== 'Network.responseReceived' &&
+    msg.method !== 'Network.loadingFinished' &&
+    msg.method !== 'Network.loadingFailed'
+  ) {
+    return;
+  }
+
+  if (msg.method === 'Network.requestWillBeSent') {
     eventCount += 1;
     lastEventAt = Date.now();
-    pushEvent(msg);
-    broadcast({ type: 'cdp', message: msg });
-    broadcast({
-      type: 'stats',
-      ingestCount: eventCount,
-      lastIngestAt: lastEventAt,
-      buffered: eventLog.length,
-      bodies: bodyStore.size,
-      port: actualPort(),
-      metro: metroTarget,
-    });
   }
+  pushEvent(msg);
+  broadcast({ type: 'cdp', message: msg });
+  broadcast({
+    type: 'stats',
+    ingestCount: eventCount,
+    lastIngestAt: lastEventAt,
+    buffered: eventLog.length,
+    bodies: bodyStore.size,
+    port: actualPort(),
+  });
 }
 
 async function resolveBody(requestId) {
   if (bodyStore.has(requestId)) return bodyStore.get(requestId);
-  throw new Error('没有缓存该 Response。请在 App 中重新请求一次。');
+  throw new Error(
+    '没有 Response Body。请确认 Expo 是用 with-expolens 启动的，并在 App 里重新请求一次。'
+  );
 }
 
 function readJson(req) {
@@ -161,7 +167,6 @@ function fetchText(url, timeoutMs = 600) {
 
 async function probeMetro(port) {
   const base = `http://127.0.0.1:${port}`;
-  // Prefer /json/list (RN debugger targets). Fall back to status endpoints.
   for (const pathName of ['/json/list', '/json', '/status']) {
     try {
       const { status, body } = await fetchText(`${base}${pathName}`);
@@ -172,7 +177,7 @@ async function probeMetro(port) {
           title: 'Metro',
           deviceName: 'local',
           __port: port,
-          networkUrl: `ws://127.0.0.1:${port}/inspector/network`,
+          hasDevice: false,
         };
       }
       let list;
@@ -188,7 +193,7 @@ async function probeMetro(port) {
           title: 'Metro（暂无设备）',
           deviceName: 'local',
           __port: port,
-          networkUrl: `ws://127.0.0.1:${port}/inspector/network`,
+          hasDevice: false,
         };
       }
       const first = items[0] || {};
@@ -196,12 +201,12 @@ async function probeMetro(port) {
         id: first.id || `metro:${port}`,
         title: first.title || first.description || 'App',
         deviceName: first.deviceName || first.device || 'device',
+        appId: first.appId || '',
         __port: port,
-        networkUrl: `ws://127.0.0.1:${port}/inspector/network`,
-        webSocketDebuggerUrl: first.webSocketDebuggerUrl,
+        hasDevice: Boolean(first.id || first.appId || first.title),
       };
     } catch {
-      /* try next path / port */
+      /* next */
     }
   }
   return null;
@@ -209,23 +214,17 @@ async function probeMetro(port) {
 
 async function listeningLocalPorts() {
   try {
-    const { stdout } = await execFileAsync(
-      'lsof',
-      ['-nP', '-iTCP', '-sTCP:LISTEN'],
-      { timeout: 2000, maxBuffer: 2 * 1024 * 1024 }
-    );
+    const { stdout } = await execFileAsync('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN'], {
+      timeout: 2000,
+      maxBuffer: 2 * 1024 * 1024,
+    });
     const ports = new Set();
     for (const line of String(stdout).split('\n')) {
-      // Only local listeners; skip ExpoLens itself later by probe failure / own port.
       const m = line.match(/:(?<port>\d+)\s+\(LISTEN\)/);
       if (!m) continue;
       const port = Number(m.groups.port);
       if (!Number.isFinite(port) || port === actualPort()) continue;
-      // Metro / Expo packager commonly sits in this band; keep scan bounded.
-      if (port < 1024 || port > 65535) continue;
-      if (port >= 8000 && port <= 8100) ports.add(port);
-      if (port >= 19000 && port <= 19020) ports.add(port);
-      if (port >= 8080 && port <= 8099) ports.add(port);
+      if ((port >= 8000 && port <= 8100) || (port >= 19000 && port <= 19020)) ports.add(port);
     }
     return [...ports];
   } catch {
@@ -236,101 +235,24 @@ async function listeningLocalPorts() {
 async function discoverMetroTargets() {
   const candidates = [...new Set([...(await listeningLocalPorts()), ...metroPortCandidates()])];
   const found = [];
-  const seen = new Set();
+  const seenPorts = new Set();
   for (const port of candidates) {
     const target = await probeMetro(port);
-    if (!target || seen.has(target.__port)) continue;
-    seen.add(target.__port);
+    if (!target || seenPorts.has(target.__port)) continue;
+    seenPorts.add(target.__port);
     found.push(target);
   }
-  return found;
-}
-
-function disconnectMetro() {
-  if (metroSocket) {
-    try {
-      metroSocket.removeAllListeners();
-      metroSocket.close();
-    } catch {
-      /* ignore */
+  const deduped = [];
+  const seenDevices = new Set();
+  for (const t of found.sort((a, b) => Number(b.hasDevice) - Number(a.hasDevice) || a.__port - b.__port)) {
+    if (t.hasDevice) {
+      const key = t.id || `${t.appId}|${t.deviceName}|${t.title}`;
+      if (seenDevices.has(key)) continue;
+      seenDevices.add(key);
     }
+    deduped.push(t);
   }
-  metroSocket = null;
-}
-
-function attachMetro(target) {
-  if (!target?.networkUrl) return;
-  if (
-    metroSocket &&
-    metroTarget?.networkUrl === target.networkUrl &&
-    (metroSocket.readyState === WebSocket.OPEN || metroSocket.readyState === WebSocket.CONNECTING)
-  ) {
-    return;
-  }
-
-  disconnectMetro();
-  metroTarget = target;
-  setBridgeStatus(`正在旁听 Metro :${target.__port} …`, 'warn');
-
-  const socket = new WebSocket(target.networkUrl);
-  metroSocket = socket;
-
-  socket.on('open', () => {
-    reconnectDelay = 800;
-    setBridgeStatus(
-      `已旁听 Metro :${target.__port} · 可与 RN DevTools 并存 · 在 App 发请求即可 Preview`,
-      'ok'
-    );
-    broadcast({
-      type: 'connected',
-      target,
-      ingestCount: eventCount,
-      buffered: eventLog.length,
-      mode: 'listen-network',
-    });
-  });
-
-  socket.on('message', (raw) => {
-    try {
-      ingestCdpMessage(JSON.parse(String(raw)));
-    } catch {
-      /* ignore non-json */
-    }
-  });
-
-  socket.on('close', () => {
-    if (metroSocket === socket) metroSocket = null;
-    setBridgeStatus(`Metro :${target.__port} 断开，稍后重连…`, 'warn');
-    scheduleDiscover(reconnectDelay);
-    reconnectDelay = Math.min(reconnectDelay * 1.5, 8000);
-  });
-
-  socket.on('error', () => {
-    // close handler will reconnect
-  });
-}
-
-async function connectPreferred(targetId) {
-  const targets = await discoverMetroTargets();
-  if (!targets.length) {
-    metroTarget = null;
-    setBridgeStatus('未发现 Metro。请先启动 Expo（npx expo start）', 'bad');
-    return { ok: false, targets, error: 'no metro' };
-  }
-  const chosen =
-    (targetId && targets.find((t) => t.id === targetId || String(t.__port) === String(targetId))) ||
-    targets[0];
-  attachMetro(chosen);
-  return { ok: true, targets, target: chosen };
-}
-
-function scheduleDiscover(delayMs = 1500) {
-  if (discoverTimer) clearTimeout(discoverTimer);
-  discoverTimer = setTimeout(async () => {
-    discoverTimer = null;
-    if (metroSocket?.readyState === WebSocket.OPEN) return;
-    await connectPreferred(metroTarget?.id);
-  }, delayMs);
+  return deduped.sort((a, b) => Number(b.hasDevice) - Number(a.hasDevice) || a.__port - b.__port);
 }
 
 function createServer() {
@@ -341,7 +263,7 @@ function createServer() {
       res.writeHead(204, {
         'access-control-allow-origin': '*',
         'access-control-allow-methods': 'GET,POST,OPTIONS',
-        'access-control-allow-headers': 'content-type',
+        'access-control-allow-headers': 'content-type,x-expolens',
       });
       res.end();
       return;
@@ -350,19 +272,18 @@ function createServer() {
     if (url.pathname === '/api/health') {
       sendJson(res, 200, {
         ok: true,
-        mode: 'listen-network',
+        mode: 'ingest-preload',
         port: actualPort(),
         ingestCount: eventCount,
         lastIngestAt: lastEventAt,
         buffered: eventLog.length,
         bodies: bodyStore.size,
-        metro: metroTarget,
-        metroConnected: metroSocket?.readyState === WebSocket.OPEN,
+        stealsDevTools: false,
+        hint: `node ${withBin} npx expo start`,
       });
       return;
     }
 
-    // Optional legacy fallback only — not the primary path.
     if (url.pathname === '/api/ingest' && req.method === 'POST') {
       try {
         const payload = await readJson(req);
@@ -377,31 +298,48 @@ function createServer() {
 
     if (url.pathname === '/api/targets') {
       const targets = await discoverMetroTargets();
+      // Synthetic ingest target first — this is the real capture channel.
       sendJson(res, 200, {
         ok: true,
-        targets,
-        mode: 'listen-network',
+        targets: [
+          {
+            id: 'ingest',
+            title: 'ExpoLens Ingest（不抢 DevTools）',
+            deviceName: 'preload',
+            __port: actualPort(),
+            hasDevice: true,
+            capture: 'ingest',
+          },
+          ...targets.map((t) => ({ ...t, capture: 'info-only' })),
+        ],
+        mode: 'ingest-preload',
         ingestCount: eventCount,
         buffered: eventLog.length,
-        metro: metroTarget,
       });
       return;
     }
 
     if (url.pathname === '/api/connect' && req.method === 'POST') {
-      try {
-        const body = await readJson(req);
-        const result = await connectPreferred(body.id || body.port);
-        sendJson(res, result.ok ? 200 : 503, {
-          ...result,
-          mode: 'listen-network',
-          port: actualPort(),
-          ingestCount: eventCount,
-          buffered: eventLog.length,
-        });
-      } catch (e) {
-        sendJson(res, 500, { ok: false, error: String(e.message || e) });
-      }
+      const text =
+        eventCount > 0
+          ? `已捕获 ${eventCount} 条 · 不抢 DevTools · :${actualPort()}`
+          : `等待 preload 推送 · :${actualPort()} · Expo 请用 with-expolens 启动`;
+      setBridgeStatus(text, eventCount > 0 ? 'ok' : 'warn');
+      broadcast({
+        type: 'connected',
+        target: { title: 'Ingest', deviceName: 'preload', port: actualPort() },
+        ingestCount: eventCount,
+        buffered: eventLog.length,
+        mode: 'ingest-preload',
+      });
+      sendJson(res, 200, {
+        ok: true,
+        mode: 'ingest-preload',
+        port: actualPort(),
+        ingestCount: eventCount,
+        buffered: eventLog.length,
+        stealsDevTools: false,
+      });
       return;
     }
 
@@ -449,12 +387,11 @@ function createServer() {
       client.send(
         JSON.stringify({
           type: 'hello',
-          mode: 'listen-network',
+          mode: 'ingest-preload',
           port: actualPort(),
           ingestCount: eventCount,
           buffered: eventLog.length,
-          target: metroTarget,
-          metroConnected: metroSocket?.readyState === WebSocket.OPEN,
+          stealsDevTools: false,
         })
       );
       for (const msg of eventLog) {
@@ -463,10 +400,10 @@ function createServer() {
         }
       }
       setBridgeStatus(
-        metroSocket?.readyState === WebSocket.OPEN
-          ? `旁听中 · Metro :${metroTarget?.__port} · 已捕获 ${eventCount}`
-          : '正在发现 Metro…',
-        metroSocket?.readyState === WebSocket.OPEN ? 'ok' : 'warn'
+        eventCount > 0
+          ? `已回放 ${eventLog.length} 条 · 共捕获 ${eventCount} · :${actualPort()}`
+          : `不抢 DevTools · 等待 with-expolens 推送 · :${actualPort()}`,
+        eventCount > 0 ? 'ok' : 'warn'
       );
 
       client.on('message', async (raw) => {
@@ -518,12 +455,11 @@ function listen(port, tries = 0) {
   server.listen(port, '127.0.0.1', () => {
     listenPort = port;
     console.log(`ExpoLens Preview: http://127.0.0.1:${port}`);
-    console.log('模式: 通用旁听 · 零改业务项目 · 任意 Expo/RN 项目可用');
-    console.log('发现: 本机监听端口 + 常见 Metro 端口');
-    console.log('可选: METRO_PORTS=8081,19000 补充扫描');
-    connectPreferred().then((r) => {
-      if (!r.ok) scheduleDiscover(2000);
-    });
+    console.log('模式: 不抢 DevTools · 只收 preload → /api/ingest');
+    console.log('任意项目启动 Expo:');
+    console.log(`  node ${withBin} npx expo start`);
+    console.log(`或: NODE_OPTIONS="--require ${preloadPath}" npx expo start`);
+    setBridgeStatus(`就绪 · 不抢 DevTools · :${port}`, 'ok');
   });
 }
 
