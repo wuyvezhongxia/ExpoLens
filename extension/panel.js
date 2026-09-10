@@ -8,7 +8,7 @@
   let selected = null;
   let bodyWaiters = new Map();
   let filterText = '';
-  let currentView = 'analysis';
+  let currentView = 'json';
   let autoFollow = true;
   let selecting = false;
 
@@ -77,8 +77,9 @@
       return;
     }
     if (msg.type === 'stats') {
+      const metroPort = msg.metro?.__port || msg.metroPort || '?';
       setStatus(
-        `实时捕获中 · ${msg.ingestCount || 0} 条 · 缓冲 ${msg.buffered || 0} · :${msg.port || '?'}`,
+        `Preview 中 · ${msg.ingestCount || 0} 条 · Metro :${metroPort}`,
         'ok'
       );
       return;
@@ -92,8 +93,9 @@
       return;
     }
     if (msg.type === 'hello' || msg.type === 'connected') {
+      const metroPort = msg.target?.__port || msg.metro?.__port || msg.port || '?';
       setStatus(
-        `已连接 · 已捕获 ${msg.ingestCount || 0} · 缓冲 ${msg.buffered || 0} · :${msg.port || msg.target?.port || '?'}`,
+        `已旁听 Metro :${metroPort} · 已捕获 ${msg.ingestCount || 0}`,
         'ok'
       );
       return;
@@ -203,7 +205,7 @@
   }
 
   async function discover() {
-    setStatus('发现中…');
+    setStatus('正在发现本机 Metro…', 'warn');
     ensureBridge();
     try {
       const res = await fetch('/api/targets', { cache: 'no-store' });
@@ -211,14 +213,14 @@
       targets = data.targets || [];
       const selectEl = $('#target');
       if (!targets.length) {
-        selectEl.innerHTML = '<option>未发现会话</option>';
-        setStatus('未发现会话 · 请先启动 Expo', 'bad');
+        selectEl.innerHTML = '<option>未发现 Metro</option>';
+        setStatus('未发现 Metro · 请先 npx expo start', 'bad');
         return;
       }
       selectEl.innerHTML = targets
         .map(
           (x, i) =>
-            `<option value="${i}">${esc(x.title || 'App')} · ${esc(x.deviceName || 'device')} · :${x.__port}</option>`
+            `<option value="${i}">${esc(x.title || 'App')} · ${esc(x.deviceName || 'device')} · Metro :${x.__port}</option>`
         )
         .join('');
       await connect(targets[0]);
@@ -228,22 +230,21 @@
   }
 
   async function connect(target) {
-    // 重连时不清空已捕获请求，避免左侧被误清空
     ensureBridge();
-    setStatus('同步捕获状态…', 'warn');
+    setStatus(`旁听 Metro :${target?.__port || '?'}…`, 'warn');
     try {
       const res = await fetch('/api/connect', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: target?.id || 'ingest' }),
+        body: JSON.stringify({ id: target?.id, port: target?.__port }),
       });
       const data = await res.json();
-      if (!data.ok) throw new Error(data.error || 'connect failed');
+      if (!data.ok) throw new Error(data.error || '未连上 Metro');
       if (bridge?.readyState === WebSocket.OPEN) {
         bridge.send(JSON.stringify({ type: 'replay' }));
       }
       setStatus(
-        `已连接 · 已捕获 ${data.ingestCount || 0} · 缓冲 ${data.buffered || 0} · :${data.port || '?'}`,
+        `已旁听 Metro :${data.target?.__port || target?.__port || '?'} · 已捕获 ${data.ingestCount || 0}`,
         'ok'
       );
     } catch (e) {
@@ -264,7 +265,7 @@
 
     if (!requests.size) {
       box.innerHTML =
-        '<div class="empty">暂无请求。<br>请保持本页已连接，然后在 <b>App</b> 里再点一次接口（不会同步 RN DevTools 里已经出现的旧请求）。</div>';
+        '<div class="empty">暂无请求。<br>保持旁听状态，在 <b>App</b> 里再点一次接口即可出现（不会回放 DevTools 里的旧请求）。</div>';
       return;
     }
     if (!list.length) {
@@ -314,10 +315,10 @@
     $('#empty').hidden = true;
     $('#detail').hidden = false;
 
-    const loading = '<div class="empty">正在读取 Response Body…</div>';
+    const loading = '<div class="empty">正在读取 Response…</div>';
+    $('#json').textContent = '正在读取 Response…';
     $('#analysis').innerHTML = loading;
     $('#tree').innerHTML = loading;
-    $('#json').textContent = '';
     $('#raw').textContent = '';
 
     try {

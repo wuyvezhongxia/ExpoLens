@@ -1,7 +1,8 @@
 {
-  "name": "rn-json-inspector",
-  "version": "0.2.0",
+  "name": "expolens",
+  "version": "0.3.0",
   "private": true,
+  "description": "Zero-config Response Preview for any Expo/RN project. Listens to Metro /inspector/network; never modifies your app.",
   "type": "module",
   "scripts": {
     "start": "node src/server.js",

@@ -11,13 +11,13 @@
         <div class="logo" aria-hidden="true"></div>
         <div>
           <h1>ExpoLens</h1>
-          <p>被动接收 Network 事件 · 不抢 RN DevTools 调试通道</p>
+          <p>Response Preview · 任意项目通用 · 零改动</p>
         </div>
       </div>
       <div class="header-actions">
         <label class="auto">
           <input id="autofollow" type="checkbox" checked />
-          新请求自动分析
+          新请求自动预览
         </label>
         <button id="clear" type="button" title="清空列表">清空</button>
         <button id="refresh" type="button" class="primary">重新连接</button>
@@ -40,15 +40,15 @@
           <input id="filter" type="search" placeholder="过滤 URL / 方法 / 状态…" />
         </div>
         <div id="requests">
-          <div class="empty">等待 metro-tee 推送。RN DevTools 可同时开着；在 App 里发请求后会出现在这里。</div>
+          <div class="empty">等待请求。先启动 Expo，再点「重新连接」；RN DevTools 可同时开着。</div>
         </div>
       </aside>
 
       <section>
         <div id="empty" class="empty hero-empty">
-          <strong>请打开正确地址并强制刷新</strong>
-          <span>现在请用 <code>http://127.0.0.1:8787</code>（不要用旧的 8792）。顶部应显示「已捕获 N 条」。</span>
-          <span>App 里 <code>Cmd+R</code> 重载一次以加载 axios 桥，然后再点接口；左侧会回放/实时显示请求。</span>
+          <strong>Response Preview</strong>
+          <span>自动发现本机任意 Metro，旁听 <code>/inspector/network</code>。</span>
+          <span>对所有项目通用：不改业务代码、不装依赖、不写死端口。App 发请求后点左侧即可预览 JSON。</span>
         </div>
 
         <div id="detail" hidden>
@@ -59,23 +59,23 @@
           </div>
 
           <div class="tabs">
-            <button class="tab active" type="button" data-view="analysis">分析</button>
+            <button class="tab active" type="button" data-view="json">JSON</button>
             <button class="tab" type="button" data-view="tree">Tree</button>
-            <button class="tab" type="button" data-view="json">JSON</button>
             <button class="tab" type="button" data-view="raw">Raw</button>
+            <button class="tab" type="button" data-view="analysis">概览</button>
             <button id="copy" type="button" class="ghost">复制当前视图</button>
           </div>
 
-          <div id="analysis" class="view active"></div>
+          <pre id="json" class="view active"></pre>
           <div id="tree" class="view"></div>
-          <pre id="json" class="view"></pre>
           <pre id="raw" class="view"></pre>
+          <div id="analysis" class="view"></div>
         </div>
       </section>
     </main>
 
     <footer>
-      被动模式：Metro 把 Network 事件复制到本页；RN DevTools 继续用原来的调试通道。
+      任意项目通用 · 零改动 · 旁听 Metro Network · 不占 RN DevTools
     </footer>
     <script src="panel.js"></script>
   </body>
