@@ -1,22 +1,50 @@
-# RN JSON Inspector
+# ExpoLens
 
-一个不依赖 Proxyman、Charles、HAR 或项目代码改动的本地 JSON Preview 修复器。它直接处理 Expo DevTools `Response` 面板中的文本：自动解析 JSON、树形查看、Raw/JSON 切换、剪贴板读取、脱敏和复制。
+本地 Expo / React Native Response 详细分析。**默认不抢 RN DevTools 调试通道。**
 
-## 使用
+## 刚才发生了什么
 
-项目目录是 `~/Documents/ChatGPT/ExpoLens`。不要再使用旧的 `~/Documents/ChatGPT/New project` 路径；该目录不存在。
+旧版会连接 `/inspector/debug`，和 React Native DevTools 互斥，所以你会看到：
+
+> Disconnected due to opening a second DevTools window for the same app.
+
+现已改为 **ingest-only**：只被动接收复制过来的 Network 事件。
+
+## 立刻恢复你的 RN DevTools
+
+1. 关掉所有 ExpoLens 页面 / 终端里的旧 `node src/server.js`
+2. 在 RN DevTools 弹窗点 **Reconnect DevTools**
+3. Network 应恢复
+
+若仍被抢占，在终端执行：
+
+```bash
+lsof -nP -iTCP:8787-8800 -sTCP:LISTEN
+# 把占用这些端口的 node 进程杀掉（旧 ExpoLens）
+kill -9 <PID>
+```
+
+## 并存用法
+
+`lovie-app/metro.config.js` 已加入：
+
+```js
+require('/Users/apple/Documents/ChatGPT/ExpoLens/metro-tee.cjs')
+```
+
+然后：
+
+1. **重启 Expo**（必须，tee 才会生效）
+2. 启动 ExpoLens：
 
 ```bash
 cd "$HOME/Documents/ChatGPT/ExpoLens"
 npm start
 ```
 
-打开 <http://127.0.0.1:8787>，将 Expo DevTools → Network → Response 中的响应粘贴进去，点击“解析 JSON”。
+3. 打开终端打印的地址（通常 http://127.0.0.1:8787）
+4. RN DevTools 可同时开着；App 发请求后，两边都能看到
 
-## 当前边界
+## 分析能力
 
-这是第一阶段的独立 Companion：它验证“复用已有 Response body、修复 Preview 体验”的核心路径，不拦截网络、不安装证书、不要求修改 Expo/RN 项目。下一步可以接 Expo 调试会话协议，把手动粘贴替换成当前请求的自动读取。
-
-## Chrome DevTools 插件（第一阶段）
-
-`extension/` 是“椰子翻译”独立 DevTools 面板：自动发现本机 Expo/Metro 的 `/json/list`，连接 `/inspector/network`，监听 Network 事件，并用 `Network.getResponseBody` 读取响应。安装方式：Chrome 打开 `chrome://extensions`，开启开发者模式，选择“加载已解压的扩展程序”，选择本项目 `extension` 目录；启动 Expo 后，在 React Native DevTools 顶部点击“椰子翻译”。
+点开 ExpoLens 里的请求 → 本地详细分析（形态、字段、敏感键、Tree/JSON/Raw）。不上传、不接公司 API。

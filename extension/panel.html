@@ -1,1 +1,82 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>椰子翻译</title><link rel="stylesheet" href="panel.css"></head><body><header><div><h1>椰子翻译</h1><p>Expo / React Native DevTools Companion</p></div><button id="refresh">重新连接</button></header><div class="toolbar"><select id="target"></select><span id="status">未连接</span></div><main><aside><div class="aside-title">请求 <span id="count">0</span></div><div id="requests"><div class="empty">请先启动 Expo 并打开 Network。</div></div></aside><section><div id="empty" class="empty">在左侧选择请求查看 Response。</div><div id="detail" hidden><div class="title"><b id="method"></b> <span id="url"></span></div><div class="tabs"><button class="tab active" data-view="tree">Tree</button><button class="tab" data-view="json">JSON</button><button class="tab" data-view="raw">Raw</button><button id="translate">翻译文本字段</button></div><div id="tree" class="view active"></div><pre id="json" class="view"></pre><pre id="raw" class="view"></pre></div></section></main><footer>自动读取 Expo 调试会话；不需要复制、不需要 Proxyman。翻译 API 下一阶段接入。</footer><script src="panel.js"></script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>ExpoLens</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <div class="logo" aria-hidden="true"></div>
+        <div>
+          <h1>ExpoLens</h1>
+          <p>被动接收 Network 事件 · 不抢 RN DevTools 调试通道</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <label class="auto">
+          <input id="autofollow" type="checkbox" checked />
+          新请求自动分析
+        </label>
+        <button id="clear" type="button" title="清空列表">清空</button>
+        <button id="refresh" type="button" class="primary">重新连接</button>
+      </div>
+    </header>
+
+    <div class="toolbar">
+      <label class="sr" for="target">调试会话</label>
+      <select id="target"></select>
+      <span id="status">未连接</span>
+    </div>
+
+    <main>
+      <aside>
+        <div class="aside-title">
+          <span>网络请求</span>
+          <span id="count">0</span>
+        </div>
+        <div class="filter-row">
+          <input id="filter" type="search" placeholder="过滤 URL / 方法 / 状态…" />
+        </div>
+        <div id="requests">
+          <div class="empty">等待 metro-tee 推送。RN DevTools 可同时开着；在 App 里发请求后会出现在这里。</div>
+        </div>
+      </aside>
+
+      <section>
+        <div id="empty" class="empty hero-empty">
+          <strong>请打开正确地址并强制刷新</strong>
+          <span>现在请用 <code>http://127.0.0.1:8787</code>（不要用旧的 8792）。顶部应显示「已捕获 N 条」。</span>
+          <span>App 里 <code>Cmd+R</code> 重载一次以加载 axios 桥，然后再点接口；左侧会回放/实时显示请求。</span>
+        </div>
+
+        <div id="detail" hidden>
+          <div class="title">
+            <span class="pill" id="method"></span>
+            <span class="pill code" id="statusCode"></span>
+            <span id="url"></span>
+          </div>
+
+          <div class="tabs">
+            <button class="tab active" type="button" data-view="analysis">分析</button>
+            <button class="tab" type="button" data-view="tree">Tree</button>
+            <button class="tab" type="button" data-view="json">JSON</button>
+            <button class="tab" type="button" data-view="raw">Raw</button>
+            <button id="copy" type="button" class="ghost">复制当前视图</button>
+          </div>
+
+          <div id="analysis" class="view active"></div>
+          <div id="tree" class="view"></div>
+          <pre id="json" class="view"></pre>
+          <pre id="raw" class="view"></pre>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      被动模式：Metro 把 Network 事件复制到本页；RN DevTools 继续用原来的调试通道。
+    </footer>
+    <script src="panel.js"></script>
+  </body>
+</html>

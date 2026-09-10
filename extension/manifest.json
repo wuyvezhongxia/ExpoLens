@@ -1,1 +1,28 @@
-{"manifest_version":3,"name":"椰子翻译 · Expo Network","version":"0.1.0","description":"React Native DevTools Expo Network 自动响应查看与翻译面板。","devtools_page":"devtools.html","permissions":["storage"],"host_permissions":["http://127.0.0.1:8081/*","http://localhost:8081/*"],"action":{"default_title":"椰子翻译"}}
+{
+  "manifest_version": 3,
+  "name": "ExpoLens · Response Analyzer",
+  "version": "0.3.0",
+  "description": "在独立窗口中连接 Expo / React Native Network，点击请求即可本地分析 Response。",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "http://[::1]/*",
+    "ws://127.0.0.1/*",
+    "ws://localhost/*",
+    "ws://[::1]/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "打开 ExpoLens 分析器",
+    "default_icon": {
+      "48": "icon.png"
+    }
+  },
+  "icons": {
+    "48": "icon.png",
+    "128": "icon.png"
+  }
+}

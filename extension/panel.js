@@ -1,1 +1,781 @@
-const $=s=>document.querySelector(s);let targets=[],socket=null,requests=new Map(),selected=null,pending=new Map(),seq=1;const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));function status(t,c=''){const e=$('#status');e.textContent=t;e.className=c}async function discover(){status('发现中…');try{const r=await fetch('http://127.0.0.1:8081/json/list',{cache:'no-store'});const all=await r.json();targets=all.filter(x=>x.devtoolsFrontendUrl?.includes('unstable_enableNetworkPanel=true')||x.reactNative?.capabilities?.nativePageReloads);$('#target').innerHTML=targets.length?targets.map((x,i)=>`<option value="${i}">${esc(x.title)} · ${esc(x.deviceName||'device')}</option>`).join(''):'<option>未发现会话</option>';targets.length?connect(targets[0]):status('未发现会话','bad')}catch(e){status('8081 不可用：请先启动 Expo','bad')}}function connect(t){if(socket)socket.close();requests.clear();renderList();const u=t.webSocketDebuggerUrl.replace('/inspector/debug','/inspector/network');socket=new WebSocket(u);socket.onopen=()=>{status('已连接 · 等待请求','ok');socket.send(JSON.stringify({id:seq++,method:'Network.enable',params:{}}))};socket.onerror=()=>status('Network 通道连接失败','bad');socket.onclose=()=>status('连接已断开','bad');socket.onmessage=e=>handle(JSON.parse(e.data))}function handle(m){if(m.id&&pending.has(m.id)){const f=pending.get(m.id);pending.delete(m.id);m.error?f.reject(Error(m.error.message)):f.resolve(m.result);return}const p=m.params||{};if(m.method==='Network.requestWillBeSent'){requests.set(p.requestId,{id:p.requestId,method:p.request?.method||'GET',url:p.request?.url||'',status:'—',mime:'',finished:false});renderList()}if(m.method==='Network.responseReceived'){const r=requests.get(p.requestId);if(r){r.status=p.response?.status||'—';r.mime=p.response?.mimeType||'';renderList()}}if(m.method==='Network.loadingFinished'){const r=requests.get(p.requestId);if(r){r.finished=true;renderList()}}}function renderList(){const b=$('#requests');$('#count').textContent=requests.size;if(!requests.size){b.innerHTML='<div class="empty">暂无请求。请在 App 中重新发起请求。</div>';return}b.innerHTML=[...requests.values()].reverse().map(r=>`<div class="row ${selected?.id===r.id?'active':''}" data-id="${esc(r.id)}"><span class="method">${esc(r.method)}</span><span class="code">${esc(r.status)}</span><div class="url">${esc(r.url)}</div><div class="meta">${esc(r.mime||'network')} · ${r.finished?'已完成':'进行中'}</div></div>`).join('');b.querySelectorAll('.row').forEach(e=>e.onclick=()=>select(requests.get(e.dataset.id)))}function body(id){return new Promise((resolve,reject)=>{const n=seq++;pending.set(n,{resolve,reject});socket.send(JSON.stringify({id:n,method:'Network.getResponseBody',params:{requestId:id}}))})}async function select(r){selected=r;renderList();$('#empty').hidden=true;$('#detail').hidden=false;$('#method').textContent=r.method;$('#url').textContent=r.url;$('#tree').innerHTML='<div class="empty">读取 Response…</div>';try{r.body=(await body(r.id)).body||'';renderDetail()}catch(e){$('#tree').innerHTML='<div class="empty">读取失败：'+esc(e.message)+'</div>'}}function leaf(v){if(v===null)return'<span class="null">null</span>';if(typeof v==='string')return'<span class="string">&quot;'+esc(v)+'&quot;</span>';if(typeof v==='number')return'<span class="number">'+v+'</span>';if(typeof v==='boolean')return'<span class="boolean">'+v+'</span>';return''}function key(k,a){return a?'<span class="index">'+esc(k)+'</span>: ':'<span class="key">&quot;'+esc(k)+'&quot;</span>: '}function treeNode(k,v,a=false,root=false){const p=root?'':key(k,a);if(v===null||typeof v!=='object')return'<div class="line">'+p+leaf(v)+'</div>';const arr=Array.isArray(v),it=Object.entries(v),o=arr?'[':'{',c=arr?']':'}';if(!it.length)return'<div class="line">'+p+'<span class="punct">'+o+c+'</span></div>';return'<div class="branch"><div class="toggle">▾ '+p+'<span class="punct">'+o+'</span> <span class="summary">'+it.length+' 项</span></div><div class="children">'+it.map(([x,y])=>treeNode(x,y,arr)).join('')+'</div><div class="closing">'+c+'</div></div>'}function renderDetail(){let d;try{d=JSON.parse(selected.body)}catch{d=null}$('#raw').textContent=selected.body;$('#json').textContent=d===null?selected.body:JSON.stringify(d,null,2);$('#tree').innerHTML=d===null?'<div class="empty">不是 JSON，已保留 Raw。</div>':'<div class="tree">'+treeNode('',d,false,true)+'</div>';$('#tree').querySelectorAll('.toggle').forEach(e=>e.onclick=()=>e.parentElement.classList.toggle('collapsed'))}$('#target').onchange=e=>connect(targets[+e.target.value]);$('#refresh').onclick=discover;document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id===b.dataset.view))});$('#translate').onclick=()=>alert('这里将调用公司的椰子翻译 API（下一阶段接入）。');discover();
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const viaLocalServer = /^https?:$/.test(location.protocol);
+
+  let targets = [];
+  let bridge = null;
+  let requests = new Map();
+  let selected = null;
+  let bodyWaiters = new Map();
+  let filterText = '';
+  let currentView = 'analysis';
+  let autoFollow = true;
+  let selecting = false;
+
+  const esc = (v) =>
+    String(v ?? '').replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    }[c]));
+
+  const bytes = (n) => {
+    if (n == null || Number.isNaN(n)) return '—';
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} kB`;
+    return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+  };
+
+  const statusClass = (code) => {
+    const n = Number(code);
+    if (!Number.isFinite(n)) return '';
+    if (n >= 400) return 'bad';
+    if (n >= 300) return 'warn';
+    return '';
+  };
+
+  function setStatus(text, cls = '') {
+    const el = $('#status');
+    el.textContent = text;
+    el.className = cls;
+  }
+
+  function bridgeUrl() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    return `${proto}://${location.host}/ws`;
+  }
+
+  function ensureBridge() {
+    if (!viaLocalServer) {
+      setStatus('请用 npm start 打开本页（需要本地代理）', 'bad');
+      return;
+    }
+    if (bridge && (bridge.readyState === WebSocket.OPEN || bridge.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    bridge = new WebSocket(bridgeUrl());
+    bridge.onopen = () => setStatus('已连接本地桥接，等待 Metro…', 'warn');
+    bridge.onclose = () => {
+      setStatus('本地桥接断开，重连中…', 'warn');
+      setTimeout(ensureBridge, 800);
+    };
+    bridge.onerror = () => setStatus('本地桥接失败', 'bad');
+    bridge.onmessage = (ev) => {
+      try {
+        onBridgeMessage(JSON.parse(ev.data));
+      } catch {
+        /* ignore */
+      }
+    };
+  }
+
+  function onBridgeMessage(msg) {
+    if (msg.type === 'status') {
+      setStatus(msg.text, msg.level === 'ok' ? 'ok' : msg.level === 'bad' ? 'bad' : 'warn');
+      return;
+    }
+    if (msg.type === 'stats') {
+      setStatus(
+        `实时捕获中 · ${msg.ingestCount || 0} 条 · 缓冲 ${msg.buffered || 0} · :${msg.port || '?'}`,
+        'ok'
+      );
+      return;
+    }
+    if (msg.type === 'cleared') {
+      requests.clear();
+      selected = null;
+      renderList();
+      $('#empty').hidden = false;
+      $('#detail').hidden = true;
+      return;
+    }
+    if (msg.type === 'hello' || msg.type === 'connected') {
+      setStatus(
+        `已连接 · 已捕获 ${msg.ingestCount || 0} · 缓冲 ${msg.buffered || 0} · :${msg.port || msg.target?.port || '?'}`,
+        'ok'
+      );
+      return;
+    }
+    if (msg.type === 'cdp') {
+      handleCdp(msg.message);
+      return;
+    }
+    if (msg.type === 'body') {
+      const waiter = bodyWaiters.get(msg.requestId);
+      if (!waiter) return;
+      bodyWaiters.delete(msg.requestId);
+      if (msg.ok) waiter.resolve(msg.result || {});
+      else waiter.reject(new Error(msg.error || '读取失败'));
+    }
+  }
+
+  function getBody(requestId) {
+    return new Promise((resolve, reject) => {
+      if (!bridge || bridge.readyState !== WebSocket.OPEN) {
+        reject(new Error('桥接未连接'));
+        return;
+      }
+      bodyWaiters.set(requestId, { resolve, reject });
+      bridge.send(JSON.stringify({ type: 'getBody', requestId }));
+      setTimeout(() => {
+        if (bodyWaiters.has(requestId)) {
+          bodyWaiters.delete(requestId);
+          reject(new Error('读取 Response 超时'));
+        }
+      }, 15000);
+    });
+  }
+
+  function handleCdp(m) {
+    const p = m.params || {};
+    if (m.method === 'Network.requestWillBeSent') {
+      const existing = requests.get(p.requestId) || {};
+      requests.set(p.requestId, {
+        ...existing,
+        id: p.requestId,
+        method: p.request?.method || 'GET',
+        url: p.request?.url || '',
+        status: existing.status ?? '—',
+        mime: existing.mime || '',
+        finished: false,
+        startedAt: p.timestamp || Date.now() / 1000,
+        requestHeaders: p.request?.headers || {},
+        type: p.type || existing.type || '',
+      });
+      renderList();
+    }
+
+    if (m.method === 'Network.responseReceived') {
+      const r = requests.get(p.requestId);
+      if (!r) return;
+      r.status = p.response?.status ?? r.status;
+      r.mime = p.response?.mimeType || r.mime;
+      r.responseHeaders = p.response?.headers || {};
+      r.statusText = p.response?.statusText || '';
+      r.protocol = p.response?.protocol || '';
+      r.encodedLength = p.response?.encodedDataLength;
+      r.type = p.type || r.type;
+      renderList();
+      if (selected?.id === r.id) renderMeta(r);
+    }
+
+    if (m.method === 'Network.loadingFinished') {
+      const r = requests.get(p.requestId);
+      if (!r) return;
+      r.finished = true;
+      r.encodedLength = p.encodedDataLength ?? r.encodedLength;
+      if (r.startedAt != null && p.timestamp != null) {
+        r.durationMs = Math.max(0, Math.round((p.timestamp - r.startedAt) * 1000));
+      }
+      renderList();
+      if (selected?.id === r.id) renderMeta(r);
+      maybeAutoSelect(r);
+    }
+
+    if (m.method === 'Network.loadingFailed') {
+      const r = requests.get(p.requestId);
+      if (!r) return;
+      r.finished = true;
+      r.failed = true;
+      r.errorText = p.errorText || 'failed';
+      renderList();
+    }
+  }
+
+  function isAnalyzable(r) {
+    if (!r?.finished || r.failed) return false;
+    const url = r.url || '';
+    if (/\.(png|jpe?g|gif|webp|svg|ico|mp4|mp3|woff2?|ttf|map)(\?|$)/i.test(url)) return false;
+    if (/\/assets\/|\.bundle\?|symbolicate|hot-update/i.test(url)) return false;
+    const mime = (r.mime || '').toLowerCase();
+    if (mime.includes('image/') || mime.includes('font') || mime.includes('video/')) return false;
+    if (mime.includes('json')) return true;
+    if (/xhr|fetch|document/i.test(r.type || '')) return true;
+    return /^https?:/i.test(url);
+  }
+
+  function maybeAutoSelect(r) {
+    if (!autoFollow || selecting) return;
+    if (!isAnalyzable(r)) return;
+    select(r);
+  }
+
+  async function discover() {
+    setStatus('发现中…');
+    ensureBridge();
+    try {
+      const res = await fetch('/api/targets', { cache: 'no-store' });
+      const data = await res.json();
+      targets = data.targets || [];
+      const selectEl = $('#target');
+      if (!targets.length) {
+        selectEl.innerHTML = '<option>未发现会话</option>';
+        setStatus('未发现会话 · 请先启动 Expo', 'bad');
+        return;
+      }
+      selectEl.innerHTML = targets
+        .map(
+          (x, i) =>
+            `<option value="${i}">${esc(x.title || 'App')} · ${esc(x.deviceName || 'device')} · :${x.__port}</option>`
+        )
+        .join('');
+      await connect(targets[0]);
+    } catch (e) {
+      setStatus(`发现失败：${e.message || e}`, 'bad');
+    }
+  }
+
+  async function connect(target) {
+    // 重连时不清空已捕获请求，避免左侧被误清空
+    ensureBridge();
+    setStatus('同步捕获状态…', 'warn');
+    try {
+      const res = await fetch('/api/connect', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: target?.id || 'ingest' }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || 'connect failed');
+      if (bridge?.readyState === WebSocket.OPEN) {
+        bridge.send(JSON.stringify({ type: 'replay' }));
+      }
+      setStatus(
+        `已连接 · 已捕获 ${data.ingestCount || 0} · 缓冲 ${data.buffered || 0} · :${data.port || '?'}`,
+        'ok'
+      );
+    } catch (e) {
+      setStatus(`连接失败：${e.message || e}`, 'bad');
+    }
+  }
+
+  function matchesFilter(r) {
+    const q = filterText.trim().toLowerCase();
+    if (!q) return true;
+    return `${r.method} ${r.status} ${r.url} ${r.mime}`.toLowerCase().includes(q);
+  }
+
+  function renderList() {
+    const box = $('#requests');
+    const list = [...requests.values()].filter(matchesFilter).reverse();
+    $('#count').textContent = String(requests.size);
+
+    if (!requests.size) {
+      box.innerHTML =
+        '<div class="empty">暂无请求。<br>请保持本页已连接，然后在 <b>App</b> 里再点一次接口（不会同步 RN DevTools 里已经出现的旧请求）。</div>';
+      return;
+    }
+    if (!list.length) {
+      box.innerHTML = '<div class="empty">没有匹配过滤条件的请求。</div>';
+      return;
+    }
+
+    box.innerHTML = list
+      .map((r) => {
+        const sc = statusClass(r.status);
+        const state = r.failed ? `失败 · ${r.errorText || ''}` : r.finished ? '已完成' : '进行中';
+        const dur = r.durationMs != null ? ` · ${r.durationMs} ms` : '';
+        return `<div class="row ${selected?.id === r.id ? 'active' : ''}" data-id="${esc(r.id)}">
+          <div class="row-top">
+            <span class="method">${esc(r.method)}</span>
+            <span class="code ${sc}">${esc(r.status)}</span>
+          </div>
+          <div class="url" title="${esc(r.url)}">${esc(r.url)}</div>
+          <div class="meta">${esc(r.mime || r.type || 'network')} · ${esc(state)}${esc(dur)}</div>
+        </div>`;
+      })
+      .join('');
+
+    box.querySelectorAll('.row').forEach((el) => {
+      el.onclick = () => {
+        const req = requests.get(el.dataset.id);
+        if (req) select(req);
+      };
+    });
+  }
+
+  function renderMeta(r) {
+    $('#method').textContent = r.method;
+    const code = $('#statusCode');
+    code.textContent = String(r.status);
+    code.className = `pill code ${statusClass(r.status)}`;
+    $('#url').textContent = r.url;
+    $('#url').title = r.url;
+  }
+
+  async function select(r) {
+    if (!r) return;
+    selecting = true;
+    selected = r;
+    renderList();
+    renderMeta(r);
+    $('#empty').hidden = true;
+    $('#detail').hidden = false;
+
+    const loading = '<div class="empty">正在读取 Response Body…</div>';
+    $('#analysis').innerHTML = loading;
+    $('#tree').innerHTML = loading;
+    $('#json').textContent = '';
+    $('#raw').textContent = '';
+
+    try {
+      const result = await getBody(r.id);
+      let body = result.body || '';
+      if (result.base64Encoded) {
+        try {
+          body = atob(body);
+        } catch {
+          body = `[base64]\n${body}`;
+        }
+      }
+      r.body = body;
+      renderDetail();
+    } catch (e) {
+      const msg = esc(e.message || String(e));
+      const hint =
+        '<div class="empty">读取失败：' +
+        msg +
+        '<br><br>请确认本页仍显示已连接，并在 App 中重新触发该请求后再点。</div>';
+      $('#analysis').innerHTML = hint;
+      $('#tree').innerHTML = hint;
+    } finally {
+      selecting = false;
+    }
+  }
+
+  function leaf(v) {
+    if (v === null) return '<span class="null">null</span>';
+    if (typeof v === 'string') return `<span class="string">&quot;${esc(v)}&quot;</span>`;
+    if (typeof v === 'number') return `<span class="number">${v}</span>`;
+    if (typeof v === 'boolean') return `<span class="boolean">${v}</span>`;
+    return '';
+  }
+
+  function keyLabel(k, isArray) {
+    return isArray
+      ? `<span class="index">${esc(k)}</span>: `
+      : `<span class="key">&quot;${esc(k)}&quot;</span>: `;
+  }
+
+  function treeNode(k, v, parentIsArray = false, isRoot = false) {
+    const prefix = isRoot ? '' : keyLabel(k, parentIsArray);
+    if (v === null || typeof v !== 'object') {
+      return `<div class="line">${prefix}${leaf(v)}</div>`;
+    }
+    const isArray = Array.isArray(v);
+    const entries = Object.entries(v);
+    const open = isArray ? '[' : '{';
+    const close = isArray ? ']' : '}';
+    if (!entries.length) {
+      return `<div class="line">${prefix}<span class="punct">${open}${close}</span></div>`;
+    }
+    return `<div class="branch">
+      <div class="toggle">▾ ${prefix}<span class="punct">${open}</span> <span class="summary">${entries.length} 项</span></div>
+      <div class="children">${entries.map(([ck, cv]) => treeNode(ck, cv, isArray)).join('')}</div>
+      <div class="closing">${close}</div>
+    </div>`;
+  }
+
+  const SENSITIVE =
+    /token|password|passwd|secret|authorization|cookie|apikey|api[_-]?key|session|private[_-]?key|refresh[_-]?token|access[_-]?token/i;
+  const ID_LIKE = /(^|_)(id|uuid|guid)(_|$)/i;
+  const TIME_LIKE = /(time|date|at|created|updated|expire|timestamp)/i;
+  const URL_RE = /^https?:\/\//i;
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const UUID_RE =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+  function typeOf(v) {
+    if (v === null) return 'null';
+    if (Array.isArray(v)) return 'array';
+    return typeof v;
+  }
+
+  function sampleOf(v) {
+    if (v === null) return 'null';
+    if (typeof v === 'string') {
+      const s = v.length > 80 ? `${v.slice(0, 80)}…` : v;
+      return `"${s}"`;
+    }
+    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+    if (Array.isArray(v)) return `Array(${v.length})`;
+    if (typeof v === 'object') return `Object(${Object.keys(v).length})`;
+    return String(v);
+  }
+
+  function detectStringKind(s) {
+    if (!s) return 'empty';
+    if (UUID_RE.test(s)) return 'uuid';
+    if (URL_RE.test(s)) return 'url';
+    if (EMAIL_RE.test(s)) return 'email';
+    if (/^\d{10,13}$/.test(s)) return 'epoch-like';
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return 'date-like';
+    if (/[\u4e00-\u9fff]/.test(s)) return 'zh-text';
+    if (s.length > 120) return 'long-text';
+    return 'text';
+  }
+
+  function walk(value, path, acc, depth = 0) {
+    acc.nodes += 1;
+    acc.maxDepth = Math.max(acc.maxDepth, depth);
+    const t = typeOf(value);
+    acc.typeCounts[t] = (acc.typeCounts[t] || 0) + 1;
+
+    if (t === 'string' || t === 'number' || t === 'boolean' || t === 'null') {
+      const key = path || '(root)';
+      if (!acc.fields.has(key)) {
+        acc.fields.set(key, {
+          path: key,
+          types: new Set(),
+          nulls: 0,
+          samples: [],
+          sensitive: SENSITIVE.test(key),
+          kinds: new Set(),
+        });
+      }
+      const f = acc.fields.get(key);
+      f.types.add(t);
+      if (t === 'null') f.nulls += 1;
+      if (t === 'string') f.kinds.add(detectStringKind(value));
+      if (f.samples.length < 3) f.samples.push(sampleOf(value));
+      if (SENSITIVE.test(key)) acc.sensitive.push(key);
+      return;
+    }
+
+    if (t === 'array') {
+      acc.arrays.push({ path: path || '(root)', length: value.length });
+      if (value.length > acc.largestArray.length) {
+        acc.largestArray = { path: path || '(root)', length: value.length };
+      }
+      const childTypes = new Set(value.map(typeOf));
+      if (childTypes.size > 1) {
+        acc.issues.push({
+          level: 'warn',
+          title: `数组元素类型不一致：${path || '(root)'}`,
+          desc: `出现类型：${[...childTypes].join(', ')}`,
+        });
+      }
+      const limit = Math.min(value.length, 50);
+      for (let i = 0; i < limit; i += 1) {
+        walk(value[i], path ? `${path}[]` : '[]', acc, depth + 1);
+      }
+      if (value.length > limit) {
+        acc.issues.push({
+          level: 'warn',
+          title: `大数组已抽样分析：${path || '(root)'}`,
+          desc: `共 ${value.length} 项，仅深入分析前 ${limit} 项。`,
+        });
+      }
+      return;
+    }
+
+    const keys = Object.keys(value);
+    acc.objects += 1;
+    for (const k of keys) {
+      const childPath = path ? `${path}.${k}` : k;
+      if (SENSITIVE.test(k)) acc.sensitive.push(childPath);
+      walk(value[k], childPath, acc, depth + 1);
+    }
+  }
+
+  function classifyShape(data) {
+    if (Array.isArray(data)) {
+      return { name: '列表响应', detail: `根节点是数组，长度 ${data.length}` };
+    }
+    if (!data || typeof data !== 'object') {
+      return { name: '标量 / 非对象', detail: `根类型为 ${typeOf(data)}` };
+    }
+    const keys = Object.keys(data);
+    const lower = Object.fromEntries(keys.map((k) => [k.toLowerCase(), k]));
+    if (lower.error || lower.errors || (lower.message && (lower.code || data.success === false))) {
+      return { name: '疑似错误体', detail: `关键字段：${keys.slice(0, 8).join(', ')}` };
+    }
+    if (lower.data && (lower.meta || lower.pagination || lower.page || lower.total || lower.cursor)) {
+      return { name: '分页 / 包装数据', detail: '含 data + 分页相关字段' };
+    }
+    if (lower.data || lower.result || lower.payload) {
+      return { name: '包装对象', detail: `常见包装键：${keys.filter((k) => /^(data|result|payload|items|list)$/i.test(k)).join(', ') || keys.slice(0, 5).join(', ')}` };
+    }
+    if (keys.some((k) => /items|list|results|records|rows/i.test(k))) {
+      return {
+        name: '集合容器',
+        detail: `集合相关键：${keys.filter((k) => /items|list|results|records|rows/i.test(k)).join(', ')}`,
+      };
+    }
+    return { name: '普通对象', detail: `顶层 ${keys.length} 个字段` };
+  }
+
+  function analyzeBody(req) {
+    const body = req.body ?? '';
+    const byteLength = new TextEncoder().encode(body).length;
+    const analysis = {
+      overview: {
+        method: req.method,
+        status: req.status,
+        mime: req.mime || '—',
+        url: req.url,
+        size: byteLength,
+        durationMs: req.durationMs,
+        protocol: req.protocol || '—',
+        type: req.type || '—',
+      },
+      content: { kind: 'text', json: null, parseError: null },
+      shape: null,
+      stats: null,
+      fields: [],
+      issues: [],
+      tags: [],
+      sensitive: [],
+    };
+
+    if (!body) {
+      analysis.issues.push({
+        level: 'warn',
+        title: '响应体为空',
+        desc: '可能是 204、空 body，或调试器未缓存该响应。',
+      });
+      analysis.tags.push({ text: 'empty', cls: 'warn' });
+      return analysis;
+    }
+
+    const trimmed = body.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        analysis.content.json = JSON.parse(trimmed);
+        analysis.content.kind = 'json';
+        analysis.tags.push({ text: 'JSON', cls: 'good' });
+      } catch (e) {
+        analysis.content.kind = 'json-like';
+        analysis.content.parseError = e.message;
+        analysis.tags.push({ text: 'JSON 解析失败', cls: 'bad' });
+        analysis.issues.push({
+          level: 'bad',
+          title: '看起来像 JSON，但解析失败',
+          desc: e.message,
+        });
+      }
+    } else if (/^</.test(trimmed)) {
+      analysis.content.kind = 'html-or-xml';
+      analysis.tags.push({ text: 'HTML/XML', cls: 'warn' });
+    } else {
+      analysis.content.kind = 'text';
+      analysis.tags.push({ text: 'Text', cls: '' });
+    }
+
+    if (Number(req.status) >= 400) analysis.tags.push({ text: `HTTP ${req.status}`, cls: 'bad' });
+    else if (Number(req.status) >= 200) analysis.tags.push({ text: `HTTP ${req.status}`, cls: 'good' });
+
+    if (analysis.content.json != null) {
+      const acc = {
+        nodes: 0,
+        objects: 0,
+        maxDepth: 0,
+        typeCounts: {},
+        fields: new Map(),
+        arrays: [],
+        largestArray: { path: '—', length: 0 },
+        emptyObjects: [],
+        sensitive: [],
+        issues: [],
+      };
+      walk(analysis.content.json, '', acc, 0);
+      analysis.shape = classifyShape(analysis.content.json);
+      analysis.stats = {
+        nodes: acc.nodes,
+        objects: acc.objects,
+        maxDepth: acc.maxDepth,
+        typeCounts: acc.typeCounts,
+        fieldCount: acc.fields.size,
+        arrayCount: acc.arrays.length,
+        largestArray: acc.largestArray,
+      };
+      analysis.issues.push(...acc.issues);
+      analysis.sensitive = [...new Set(acc.sensitive)].slice(0, 40);
+      if (analysis.sensitive.length) {
+        analysis.tags.push({ text: `敏感字段 ${analysis.sensitive.length}`, cls: 'warn' });
+      }
+      for (const f of acc.fields.values()) {
+        if (f.types.size > 1) {
+          analysis.issues.push({
+            level: 'warn',
+            title: `字段类型不稳定：${f.path}`,
+            desc: `观测到类型：${[...f.types].join(', ')}`,
+          });
+        }
+      }
+      let idFields = 0;
+      let timeFields = 0;
+      for (const f of acc.fields.values()) {
+        const leafName = f.path.split('.').pop().replace(/\[\]/g, '');
+        if (ID_LIKE.test(leafName)) idFields += 1;
+        if (TIME_LIKE.test(leafName)) timeFields += 1;
+      }
+      analysis.tags.push({ text: `深度 ${acc.maxDepth}`, cls: '' });
+      analysis.tags.push({ text: `字段 ${acc.fields.size}`, cls: '' });
+      if (idFields) analysis.tags.push({ text: `ID 类 ${idFields}`, cls: '' });
+      if (timeFields) analysis.tags.push({ text: `时间类 ${timeFields}`, cls: '' });
+      analysis.fields = [...acc.fields.values()]
+        .sort((a, b) => a.path.localeCompare(b.path))
+        .slice(0, 200)
+        .map((f) => ({
+          path: f.path,
+          types: [...f.types].join('|'),
+          nulls: f.nulls,
+          kinds: [...f.kinds].join(', ') || '—',
+          sample: f.samples[0] || '—',
+          sensitive: f.sensitive,
+        }));
+    }
+
+    return analysis;
+  }
+
+  function renderAnalysis(req) {
+    const a = analyzeBody(req);
+    const o = a.overview;
+    const cards = [
+      ['状态', o.status, o.mime],
+      ['体积', bytes(o.size), `${(req.body || '').length.toLocaleString()} chars`],
+      ['耗时', o.durationMs != null ? `${o.durationMs} ms` : '—', o.protocol],
+      ['类型', a.content.kind, o.type],
+    ]
+      .map(
+        ([label, value, sub]) =>
+          `<div class="card"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="sub">${esc(sub || '')}</div></div>`
+      )
+      .join('');
+
+    const tags = a.tags.map((t) => `<span class="tag ${t.cls || ''}">${esc(t.text)}</span>`).join('');
+    const shapeHtml = a.shape
+      ? `<div class="block"><h3>响应形态</h3><p><strong>${esc(a.shape.name)}</strong> — ${esc(a.shape.detail)}</p></div>`
+      : `<div class="block"><h3>响应形态</h3><p>非 JSON 或解析失败，见 Raw。</p></div>`;
+
+    const stats = a.stats;
+    const statsHtml = stats
+      ? `<div class="block"><h3>结构统计</h3>
+          <div class="tag-row" style="margin-bottom:8px">
+            <span class="tag">节点 ${stats.nodes}</span>
+            <span class="tag">对象 ${stats.objects}</span>
+            <span class="tag">字段路径 ${stats.fieldCount}</span>
+            <span class="tag">数组 ${stats.arrayCount}</span>
+            <span class="tag">最大深度 ${stats.maxDepth}</span>
+            <span class="tag">最大数组 ${esc(stats.largestArray.path)} · ${stats.largestArray.length}</span>
+          </div>
+          <p>类型分布：${esc(Object.entries(stats.typeCounts).map(([k, v]) => `${k}=${v}`).join(' · '))}</p>
+        </div>`
+      : '';
+
+    const issuesHtml = a.issues.length
+      ? `<div class="block"><h3>问题与提示 · ${a.issues.length}</h3>${a.issues
+          .map(
+            (i) =>
+              `<div class="issue ${i.level}"><div class="title-line">${esc(i.title)}</div><div class="desc">${esc(i.desc)}</div></div>`
+          )
+          .join('')}</div>`
+      : `<div class="block"><h3>问题与提示</h3><p>未发现明显结构异常。</p></div>`;
+
+    const sensitiveHtml = a.sensitive.length
+      ? `<div class="block"><h3>疑似敏感字段</h3><div class="tag-row">${a.sensitive
+          .map((p) => `<span class="tag warn">${esc(p)}</span>`)
+          .join('')}</div></div>`
+      : '';
+
+    const fieldsHtml = a.fields.length
+      ? `<div class="block"><h3>字段清单 · 前 ${a.fields.length} 条</h3>
+          <table class="fields">
+            <thead><tr><th>路径</th><th>类型</th><th>形态</th><th>示例</th></tr></thead>
+            <tbody>
+              ${a.fields
+                .map(
+                  (f) => `<tr>
+                    <td class="path">${esc(f.path)}${f.sensitive ? ' ⚠' : ''}</td>
+                    <td>${esc(f.types)}${f.nulls ? ` · null×${f.nulls}` : ''}</td>
+                    <td>${esc(f.kinds)}</td>
+                    <td class="sample">${esc(f.sample)}</td>
+                  </tr>`
+                )
+                .join('')}
+            </tbody>
+          </table>
+        </div>`
+      : '';
+
+    $('#analysis').innerHTML = `<div class="analysis-grid">
+      <div class="cards">${cards}</div>
+      <div class="block"><h3>标签</h3><div class="tag-row">${tags || '<span class="tag">—</span>'}</div></div>
+      ${shapeHtml}${statsHtml}${issuesHtml}${sensitiveHtml}${fieldsHtml}
+    </div>`;
+  }
+
+  function renderDetail() {
+    if (!selected) return;
+    const body = selected.body ?? '';
+    let data = null;
+    try {
+      data = JSON.parse(body);
+    } catch {
+      data = null;
+    }
+    $('#raw').textContent = body;
+    $('#json').textContent = data === null ? body : JSON.stringify(data, null, 2);
+    if (data === null) {
+      $('#tree').innerHTML = '<div class="empty">不是合法 JSON，已保留 Raw。</div>';
+    } else {
+      $('#tree').innerHTML = `<div class="tree">${treeNode('', data, false, true)}</div>`;
+      $('#tree').querySelectorAll('.toggle').forEach((el) => {
+        el.onclick = () => el.parentElement.classList.toggle('collapsed');
+      });
+    }
+    renderAnalysis(selected);
+  }
+
+  function copyCurrent() {
+    let text = '';
+    if (currentView === 'analysis') text = $('#analysis').innerText || '';
+    else if (currentView === 'tree') text = $('#tree').innerText || '';
+    else if (currentView === 'json') text = $('#json').textContent || '';
+    else text = $('#raw').textContent || '';
+    navigator.clipboard?.writeText(text).then(
+      () => setStatus('已复制当前视图', 'ok'),
+      () => setStatus('复制失败', 'bad')
+    );
+  }
+
+  $('#target').onchange = (e) => {
+    const t = targets[Number(e.target.value)];
+    if (t) connect(t);
+  };
+  $('#refresh').onclick = discover;
+  $('#clear').onclick = async () => {
+    requests.clear();
+    selected = null;
+    renderList();
+    $('#empty').hidden = false;
+    $('#detail').hidden = true;
+    try {
+      await fetch('/api/clear', { method: 'POST' });
+    } catch {
+      /* ignore */
+    }
+  };
+  $('#autofollow').onchange = (e) => {
+    autoFollow = !!e.target.checked;
+  };
+  $('#filter').oninput = (e) => {
+    filterText = e.target.value || '';
+    renderList();
+  };
+  $('#copy').onclick = copyCurrent;
+  document.querySelectorAll('.tab').forEach((btn) => {
+    btn.onclick = () => {
+      currentView = btn.dataset.view;
+      document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x === btn));
+      document.querySelectorAll('.view').forEach((x) => x.classList.toggle('active', x.id === currentView));
+    };
+  });
+
+  ensureBridge();
+  discover();
+})();

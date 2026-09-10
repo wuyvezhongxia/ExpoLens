@@ -1,26 +1,312 @@
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { WebSocketServer, WebSocket } from 'ws';
 
-const port = Number(process.env.PORT || 8787);
+/**
+ * ExpoLens ingest-only：不抢 RN DevTools。
+ * 缓存最近 Network 事件，页面连上时回放，避免“服务端有数、左侧空白”。
+ */
+const preferred = Number(process.env.PORT || 8787);
+const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'extension');
+const types = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.json': 'application/json; charset=utf-8',
+};
 
-const html = `<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>RN JSON Inspector</title><style>
-:root{color-scheme:dark;font:14px -apple-system,BlinkMacSystemFont,"SF Pro Text",Segoe UI,sans-serif;background:#101318;color:#e9edf3}*{box-sizing:border-box}body{margin:0;height:100vh;display:flex;flex-direction:column}header{height:62px;padding:0 20px;border-bottom:1px solid #2b3340;display:flex;align-items:center;gap:14px}h1{font-size:18px;margin:0}header span{color:#8c98a8;font-size:12px}.actions{margin-left:auto;display:flex;gap:8px}button{border:1px solid #3a4656;background:#202936;color:#e9edf3;border-radius:6px;padding:8px 12px;cursor:pointer}button:hover{background:#2b394b}button.primary{background:#2878d0;border-color:#4395ed}.layout{display:grid;grid-template-columns:42% 58%;min-height:0;flex:1}.input,.output{min-width:0;display:flex;flex-direction:column;padding:16px;gap:10px}.input{border-right:1px solid #2b3340}label{color:#9aa6b5;font-size:12px}textarea{flex:1;resize:none;width:100%;background:#0b0e12;border:1px solid #303a48;border-radius:7px;color:#dce6f2;padding:14px;font:13px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.5;outline:none}textarea:focus{border-color:#3d8fe5}.bar{display:flex;align-items:center;gap:8px;min-height:36px}.bar input{flex:1;background:#171e28;border:1px solid #303a48;border-radius:6px;color:#e9edf3;padding:9px}.status{font-size:12px;color:#8e9aaa}.status.ok{color:#6bd69a}.status.bad{color:#f58d8d}.tabs{display:flex;gap:6px}.tab.active{background:#2b78cc}.pane{display:none;min-height:0;flex:1;overflow:auto}.pane.active{display:block}.tree{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.75;white-space:normal}.node-line{min-height:23px}.children{margin-left:22px;padding-left:10px;border-left:1px solid #273140}.key{color:#c792ea}.index{color:#82aaff}.string{color:#7fdb8f;white-space:pre-wrap;word-break:break-word}.number{color:#66c7f2}.boolean{color:#ffcb6b}.null{color:#aab2bf}.punct,.closing{color:#aab2bf}.toggle{cursor:pointer;color:#aab2bf;user-select:none}.summary{color:#7f8b9b;font-size:11px}.collapsed>.children,.collapsed>.closing{display:none}.collapsed>.toggle .arrow{display:inline-block;transform:rotate(-90deg)}.raw{margin:0;white-space:pre-wrap;word-break:break-word;background:#0b0e12;border:1px solid #303a48;border-radius:7px;padding:14px;min-height:100%;font:13px ui-monospace,SFMono-Regular,Menlo,monospace}.hint{color:#7f8b9b;line-height:1.6}.check{display:flex;align-items:center;gap:6px;color:#aeb9c8;font-size:12px}.footer{font-size:11px;color:#697687;padding:8px 16px;border-top:1px solid #242c37}@media(max-width:850px){.layout{grid-template-columns:1fr;grid-template-rows:50% 50%}.input{border-right:0;border-bottom:1px solid #2b3340}}
-</style></head><body><header><h1>RN JSON Inspector</h1><span>粘贴后自动格式化 · 不抓包 · 不改项目</span><div class="actions"><button id="paste">读取剪贴板</button><button id="clear">清空</button></div></header><div class="layout"><section class="input"><label for="source">从 DevTools → Response 复制后，直接粘贴到这里（会自动解析）</label><textarea id="source" spellcheck="false" placeholder='{"bots": [{"id": "..."}]}'></textarea><div class="bar"><label class="check"><input type="checkbox" id="redact" checked>显示时脱敏</label><span class="status" id="status">等待粘贴</span></div></section><section class="output"><div class="bar"><div class="tabs"><button class="tab active" data-pane="tree">Tree</button><button class="tab" data-pane="json">JSON</button><button class="tab" data-pane="raw">Raw</button></div><button id="copy" style="margin-left:auto">复制当前视图</button></div><div id="tree" class="pane active"><div class="hint">粘贴 JSON 后自动显示可折叠的树。</div></div><pre id="json" class="pane raw"></pre><pre id="raw" class="pane raw"></pre></section></div><div class="footer">数据只在本地浏览器内处理；不会上传。适用于 Expo DevTools Response 面板已能显示、但 Preview 为空的场景。</div>
-<script>
-const source=document.querySelector('#source'),status=document.querySelector('#status'),tree=document.querySelector('#tree'),jsonPane=document.querySelector('#json'),rawPane=document.querySelector('#raw');let parsed=null,view='tree';
-const redactKeys=/token|password|secret|authorization|cookie|apikey|api_key/i;
-function safe(value){if(!document.querySelector('#redact').checked)return value;if(Array.isArray(value))return value.map(safe);if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,redactKeys.test(k)?'[REDACTED]':safe(v)]));return value}
-function esc(v){return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function leaf(v){if(v===null)return '<span class="null">null</span>';if(typeof v==='string')return '<span class="string">&quot;'+esc(v)+'&quot;</span>';if(typeof v==='number')return '<span class="number">'+v+'</span>';if(typeof v==='boolean')return '<span class="boolean">'+v+'</span>';return ''}
-function keyLabel(key,isArray,isRoot){if(isRoot)return '';if(isArray)return '<span class="index">'+esc(key)+'</span>: ';return '<span class="key">&quot;'+esc(key)+'&quot;</span>: '}
-function node(key,value,parentIsArray=false,isRoot=false){const prefix=keyLabel(key,parentIsArray,isRoot);if(value===null||typeof value!=='object')return '<div class="node-line">'+prefix+leaf(value)+'</div>';const isArray=Array.isArray(value),entries=Object.entries(value),open=isArray?'[':'{',close=isArray?']':'}';if(!entries.length)return '<div class="node-line">'+prefix+'<span class="punct">'+open+close+'</span></div>';return '<div class="branch"><div class="toggle"><span class="arrow">▾</span> '+prefix+'<span class="punct">'+open+'</span> <span class="summary">'+entries.length+' 项</span></div><div class="children">'+entries.map(([childKey,childValue])=>node(childKey,childValue,isArray,false)).join('')+'</div><div class="closing">'+close+'</div></div>'}
-function parseNow(){const text=source.value.replace(/^\\uFEFF/,'').trim();if(!text){parsed=null;tree.innerHTML='<div class="hint">粘贴 JSON 后自动显示可折叠的树。</div>';jsonPane.textContent='';rawPane.textContent='';status.textContent='等待粘贴';status.className='status';return}try{parsed=JSON.parse(text);render()}catch(e){parsed=null;status.textContent='等待完整 JSON · '+e.message;status.className='status bad'}}
-function render(){if(parsed===null)return;const clean=safe(parsed);tree.innerHTML='<div class="tree">'+node('',clean,false,true)+'</div>';jsonPane.textContent=JSON.stringify(clean,null,2);rawPane.textContent=source.value;document.querySelectorAll('.toggle').forEach(e=>e.onclick=()=>e.parentElement.classList.toggle('collapsed'));status.textContent='自动解析成功 · '+source.value.length.toLocaleString()+' 字符';status.className='status ok'}
-source.addEventListener('input',parseNow);source.addEventListener('paste',()=>setTimeout(parseNow,0));
-document.querySelector('#paste').onclick=async()=>{try{source.value=await navigator.clipboard.readText();parseNow()}catch(e){status.textContent='无法读取剪贴板，请手动粘贴';status.className='status bad'}};
-document.querySelector('#clear').onclick=()=>{source.value='';parsed=null;tree.innerHTML='<div class="hint">解析后显示可折叠的 JSON 树。</div>';jsonPane.textContent='';rawPane.textContent='';status.textContent='等待输入';status.className='status'};
-document.querySelector('#redact').onchange=()=>render();document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{view=b.dataset.pane;document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.pane').forEach(x=>x.classList.toggle('active',x.id===view))});document.querySelector('#copy').onclick=()=>{const el=document.querySelector('#'+view);navigator.clipboard?.writeText(el.innerText||el.textContent||'')};
-</script></body></html>`;
+const MAX_EVENTS = 500;
+const bodyStore = new Map();
+const eventLog = [];
+const uiClients = new Set();
+let ingestCount = 0;
+let lastIngestAt = null;
+let listenPort = preferred;
 
-http.createServer((req,res)=>{res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store, no-cache, must-revalidate'});res.end(html)}).listen(port,'127.0.0.1',()=>console.log(`RN JSON Inspector: http://127.0.0.1:${port}`));
+function actualPort() {
+  return listenPort || preferred;
+}
+
+function broadcast(msg, { skip } = {}) {
+  const data = JSON.stringify(msg);
+  for (const c of uiClients) {
+    if (skip && c === skip) continue;
+    if (c.readyState === WebSocket.OPEN) c.send(data);
+  }
+}
+
+function setBridgeStatus(text, level = 'info') {
+  broadcast({ type: 'status', text, level });
+}
+
+function pushEvent(msg) {
+  eventLog.push(msg);
+  if (eventLog.length > MAX_EVENTS) eventLog.splice(0, eventLog.length - MAX_EVENTS);
+}
+
+function ingestCdpMessage(msg) {
+  if (!msg || typeof msg !== 'object') return;
+
+  if (msg.method === 'Expo(Network.receivedResponseBody)' && msg.params?.requestId) {
+    const { requestId, ...rest } = msg.params;
+    bodyStore.set(requestId, rest);
+    if (bodyStore.size > 400) {
+      const first = bodyStore.keys().next().value;
+      bodyStore.delete(first);
+    }
+    return;
+  }
+
+  if (typeof msg.method === 'string' && msg.method.startsWith('Network.')) {
+    ingestCount += 1;
+    lastIngestAt = Date.now();
+    pushEvent(msg);
+    broadcast({ type: 'cdp', message: msg });
+    broadcast({
+      type: 'stats',
+      ingestCount,
+      lastIngestAt,
+      buffered: eventLog.length,
+      bodies: bodyStore.size,
+      port: actualPort(),
+    });
+  }
+}
+
+async function resolveBody(requestId) {
+  if (bodyStore.has(requestId)) return bodyStore.get(requestId);
+  throw new Error('没有缓存该 Response。请在 App 中重新请求一次。');
+}
+
+function readJson(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', (c) => {
+      body += c;
+      if (body.length > 20 * 1024 * 1024) {
+        reject(new Error('payload too large'));
+        req.destroy();
+      }
+    });
+    req.on('end', () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch (e) {
+        reject(e);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function sendJson(res, status, body) {
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    'access-control-allow-origin': '*',
+  });
+  res.end(JSON.stringify(body));
+}
+
+function createServer() {
+  const server = http.createServer(async (req, res) => {
+    const url = new URL(req.url || '/', 'http://127.0.0.1');
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, {
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET,POST,OPTIONS',
+        'access-control-allow-headers': 'content-type',
+      });
+      res.end();
+      return;
+    }
+
+    if (url.pathname === '/api/health') {
+      sendJson(res, 200, {
+        ok: true,
+        mode: 'ingest-only',
+        port: actualPort(),
+        ingestCount,
+        lastIngestAt,
+        buffered: eventLog.length,
+        bodies: bodyStore.size,
+      });
+      return;
+    }
+
+    if (url.pathname === '/api/ingest' && req.method === 'POST') {
+      try {
+        const payload = await readJson(req);
+        if (Array.isArray(payload)) payload.forEach(ingestCdpMessage);
+        else ingestCdpMessage(payload);
+        sendJson(res, 200, { ok: true, ingestCount, buffered: eventLog.length });
+      } catch (e) {
+        sendJson(res, 400, { ok: false, error: String(e.message || e) });
+      }
+      return;
+    }
+
+    if (url.pathname === '/api/targets') {
+      sendJson(res, 200, {
+        ok: true,
+        targets: [
+          {
+            id: 'ingest',
+            title: 'ExpoLens Ingest（不抢 DevTools）',
+            deviceName: 'bridge',
+            __port: actualPort(),
+          },
+        ],
+        mode: 'ingest-only',
+        ingestCount,
+        buffered: eventLog.length,
+      });
+      return;
+    }
+
+    if (url.pathname === '/api/connect' && req.method === 'POST') {
+      const text =
+        ingestCount > 0
+          ? `已捕获 ${ingestCount} 条 · 缓冲 ${eventLog.length} · :${actualPort()}`
+          : `等待 App 请求 · :${actualPort()}（不抢 DevTools）`;
+      setBridgeStatus(text, 'ok');
+      broadcast({
+        type: 'connected',
+        target: { title: 'Ingest', deviceName: 'bridge', port: actualPort() },
+        ingestCount,
+        buffered: eventLog.length,
+      });
+      sendJson(res, 200, {
+        ok: true,
+        mode: 'ingest-only',
+        port: actualPort(),
+        ingestCount,
+        buffered: eventLog.length,
+      });
+      return;
+    }
+
+    if (url.pathname === '/api/clear' && req.method === 'POST') {
+      eventLog.length = 0;
+      bodyStore.clear();
+      ingestCount = 0;
+      lastIngestAt = null;
+      broadcast({ type: 'cleared' });
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    let filePath = url.pathname === '/' ? '/panel.html' : url.pathname;
+    filePath = path.normalize(filePath).replace(/^(\.\.[/\\])+/, '');
+    const abs = path.join(root, filePath);
+    if (!abs.startsWith(root)) {
+      res.writeHead(403);
+      res.end('Forbidden');
+      return;
+    }
+    fs.readFile(abs, (err, data) => {
+      if (err) {
+        res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end('Not found');
+        return;
+      }
+      res.writeHead(200, {
+        'content-type': types[path.extname(abs)] || 'application/octet-stream',
+        'cache-control': 'no-store',
+      });
+      res.end(data);
+    });
+  });
+
+  const wss = new WebSocketServer({ noServer: true });
+  server.on('upgrade', (req, socket, head) => {
+    const url = new URL(req.url || '/', 'http://127.0.0.1');
+    if (url.pathname !== '/ws') {
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (client) => {
+      uiClients.add(client);
+      client.send(
+        JSON.stringify({
+          type: 'hello',
+          mode: 'ingest-only',
+          port: actualPort(),
+          ingestCount,
+          buffered: eventLog.length,
+          target: { title: 'Ingest', deviceName: 'bridge', port: actualPort() },
+        })
+      );
+      // 回放缓冲，解决“服务端有数但页面空白”
+      for (const msg of eventLog) {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({ type: 'cdp', message: msg, replay: true }));
+        }
+      }
+      setBridgeStatus(
+        ingestCount > 0
+          ? `已回放 ${eventLog.length} 条缓冲 · 共捕获 ${ingestCount} · :${actualPort()}`
+          : `被动模式就绪 · :${actualPort()} · 在 App 发请求后会出现在左侧`,
+        'ok'
+      );
+
+      client.on('message', async (raw) => {
+        let msg;
+        try {
+          msg = JSON.parse(String(raw));
+        } catch {
+          return;
+        }
+        if (msg.type === 'getBody') {
+          try {
+            const result = await resolveBody(msg.requestId);
+            client.send(
+              JSON.stringify({ type: 'body', requestId: msg.requestId, ok: true, result })
+            );
+          } catch (e) {
+            client.send(
+              JSON.stringify({
+                type: 'body',
+                requestId: msg.requestId,
+                ok: false,
+                error: String(e.message || e),
+              })
+            );
+          }
+        }
+        if (msg.type === 'replay') {
+          for (const m of eventLog) {
+            client.send(JSON.stringify({ type: 'cdp', message: m, replay: true }));
+          }
+        }
+      });
+      client.on('close', () => uiClients.delete(client));
+    });
+  });
+
+  return server;
+}
+
+function listen(port, tries = 0) {
+  const server = createServer();
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE' && tries < 20) {
+      listen(port + 1, tries + 1);
+      return;
+    }
+    throw err;
+  });
+  server.listen(port, '127.0.0.1', () => {
+    listenPort = port;
+    console.log(`ExpoLens: http://127.0.0.1:${port}`);
+    console.log('模式: ingest-only + 事件回放');
+    console.log(`ingest: http://127.0.0.1:${port}/api/ingest`);
+  });
+}
+
+listen(preferred);

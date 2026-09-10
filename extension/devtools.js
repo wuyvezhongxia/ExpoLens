@@ -1,1 +1,0 @@
-chrome.devtools.panels.create('椰子翻译','icon.svg','panel.html');
